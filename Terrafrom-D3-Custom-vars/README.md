@@ -1,8 +1,20 @@
-# Day 3 — Terraform: Multi-Provider Setup with Variables & tfvars
+# Day 3 — Terraform Hands-On: Multi-Provider Setup, Variables & tfvars
 
-## Overview
+## What This Hands-On Covers
 
-This session focused on provisioning EC2 instances across **two different AWS environments (Dev & Test)** using multiple AWS provider aliases, variable files, and tfvars — with real issues encountered and resolved along the way.
+This hands-on walks through provisioning EC2 instances across two isolated AWS environments — **Dev** and **Test** — using a single Terraform configuration. Along the way you will learn how Terraform handles multiple providers, how variables and tfvars files work together, and what really happens under the hood when you run `terraform apply` with different variable inputs.
+
+By the end of this, you will understand:
+- How to use **provider aliases** to target different AWS accounts or regions
+- The difference between **`.auto.tfvars`** and named **`.tfvars`** files
+- How Terraform's **variable precedence** works
+- Why Terraform sometimes replaces resources you didn't intend to touch — and how to prevent it
+
+---
+
+## The Goal
+
+Provision two EC2 instances — one for Dev, one for Test — each managed by a separate AWS provider alias pointing to different AWS profiles. Both instances should be independently configurable without affecting each other.
 
 ---
 
@@ -10,37 +22,38 @@ This session focused on provisioning EC2 instances across **two different AWS en
 
 ```
 .
-├── main.tf           # EC2 instance resources for dev and test
-├── provider.tf       # AWS provider configurations with aliases
-├── variables.tf      # Variable declarations for dev and test
-├── dev.auto.tfvars   # Dev environment variable values
-└── test.auto.tfvars  # Test environment variable values
+├── main.tf              # EC2 instance resource definitions
+├── provider.tf          # AWS provider blocks with aliases
+├── variables.tf         # Variable declarations for dev and test
+├── dev.auto.tfvars      # Dev environment values (auto-loaded)
+├── test.auto.tfvars     # Test environment values (auto-loaded)
+├── dev.tfvars           # Dev values for manual override (explicit)
+└── test.tfvars          # Test values for manual override (explicit)
 ```
 
 ---
 
-## What Was Built
+## Part 1 — Building the Configuration
 
-### `provider.tf` — Multiple Provider Aliases
+### Step 1: `provider.tf` — Multiple AWS Providers with Aliases
 
-Three AWS providers were configured:
-
-- **Default** → `us-east-1` (default profile)
-- **`dev_env`** → `us-west-2` (dev_env profile)
-- **`test_env`** → `us-west-2` (test_env profile)
+When you write `provider "aws"` more than once in the same config, Terraform needs a way to tell them apart. That is where **aliases** come in. An alias gives each provider block a unique name so your resources can reference exactly which one to use.
 
 ```hcl
+# Default provider — used if no alias is specified in a resource
 provider "aws" {
   region  = "us-east-1"
   profile = "default"
 }
 
+# Dev environment — us-west-2 using the dev_env AWS profile
 provider "aws" {
   region  = "us-west-2"
   alias   = "dev_env"
   profile = "dev_env"
 }
 
+# Test environment — us-west-2 using the test_env AWS profile
 provider "aws" {
   region  = "us-west-2"
   alias   = "test_env"
@@ -48,208 +61,299 @@ provider "aws" {
 }
 ```
 
-### `variables.tf` — Separate Variables for Dev & Test
+> 💡 **Concept — Provider Alias:** Think of each provider block as a separate "connection" to AWS. The alias is its label. Without an alias, only one `aws` provider can exist in a config. With aliases, you can have as many as you need — each pointing to a different region, account, or profile.
 
-Each environment has its own AMI and instance type variables with empty defaults.
+---
+
+### Step 2: `variables.tf` — Declaring Variables for Each Environment
+
+Each environment gets its own dedicated set of variables. Notice the naming convention: dev variables use generic names (`ami_id`, `instance_type`) while test variables are prefixed with `test_`. This separation is intentional and becomes very important later in Part 3.
 
 ```hcl
-variable "ami_id"             { type = string; default = "" }
-variable "instance_type"      { type = string; default = "" }
-variable "test_ami_id"        { type = string; default = "" }
-variable "test_instance_type" { type = string; default = "" }
+### Dev Variables ###
+variable "ami_id" {
+  description = "AMI ID for the dev instance"
+  type        = string
+  default     = ""
+}
+
+variable "instance_type" {
+  description = "Instance type for the dev instance"
+  type        = string
+  default     = ""
+}
+
+### Test Variables ###
+variable "test_ami_id" {
+  description = "AMI ID for the test instance"
+  type        = string
+  default     = ""
+}
+
+variable "test_instance_type" {
+  description = "Instance type for the test instance"
+  type        = string
+  default     = ""
+}
 ```
 
-### `dev.auto.tfvars` & `test.auto.tfvars` — Environment Values
+> 💡 **Concept — Declaration vs Assignment:** `variables.tf` only *declares* that a variable exists and its expected type. It does not supply the actual value — that happens in `.tfvars` files. Think of `variables.tf` as a contract: "these are the inputs this configuration accepts." The `.tfvars` files are what fulfill that contract with real values.
 
-Values are split into separate tfvars files and automatically loaded by Terraform.
+---
 
-| File                | Variable            | Value                  |
-|---------------------|---------------------|------------------------|
-| `dev.auto.tfvars`   | `ami_id`            | `ami-03caad32a158f72db` |
-| `dev.auto.tfvars`   | `instance_type`     | `t2.micro`             |
-| `test.auto.tfvars`  | `test_ami_id`       | `ami-03caad32a158f72db` |
-| `test.auto.tfvars`  | `test_instance_type`| `t2.micro`             |
+### Step 3: `dev.auto.tfvars` & `test.auto.tfvars` — Supplying the Values
 
-### `main.tf` — EC2 Resources with Provider Binding
+These files assign actual values to the variables declared above. The `.auto.tfvars` suffix tells Terraform to load them **automatically** without any flags.
 
-Each instance is explicitly bound to its provider alias using `provider = aws.<alias>`.
+```hcl
+# dev.auto.tfvars — Linux AMI for dev
+ami_id        = "ami-03caad32a158f72db"
+instance_type = "t2.micro"
+```
+
+```hcl
+# test.auto.tfvars — Linux AMI for test
+test_ami_id        = "ami-03caad32a158f72db"
+test_instance_type = "t2.micro"
+```
+
+> 💡 **Concept — `.auto.tfvars`:** Any file ending in `.auto.tfvars` is picked up automatically when you run `terraform plan` or `terraform apply` — no flags needed. Terraform loads all such files alphabetically. This makes them ideal for baseline values you always want applied to an environment.
+
+---
+
+### Step 4: `main.tf` — Defining the EC2 Resources
+
+This is where provider aliases and variables come together. Each resource explicitly declares which provider to use via the `provider` attribute, and references its own set of variables.
 
 ```hcl
 resource "aws_instance" "dev" {
   ami                    = var.ami_id
   instance_type          = var.instance_type
-  provider               = aws.dev_env
+  provider               = aws.dev_env          # Binds to the dev_env provider alias
   subnet_id              = "subnet-0fd2fc2b84b24cff8"
   vpc_security_group_ids = ["sg-044910c7a8c19aa3d"]
-  tags = { name = "dev-instance" }
+
+  tags = {
+    name = "dev-instance"
+  }
 }
 
 resource "aws_instance" "test" {
   ami                    = var.test_ami_id
   instance_type          = var.test_instance_type
-  provider               = aws.test_env
+  provider               = aws.test_env         # Binds to the test_env provider alias
   subnet_id              = "subnet-0fd2fc2b84b24cff8"
   vpc_security_group_ids = ["sg-044910c7a8c19aa3d"]
-  tags = { name = "test-instance" }
+
+  tags = {
+    name = "test-instance"
+  }
 }
 ```
 
----
-
-## Issues Encountered & Fixes
-
-### Issue 1: Incorrect Provider References in `main.tf`
-
-**Problem:** The `provider` attribute in the resource blocks was not correctly pointing to the aliased providers, causing Terraform to use the wrong AWS account/region.
-
-**Fix:** Explicitly set `provider = aws.dev_env` and `provider = aws.test_env` in each resource block to bind each instance to the correct provider alias.
+> 💡 **Concept — `provider = aws.<alias>`:** Without this line, Terraform uses the default (un-aliased) provider for every resource. Adding `provider = aws.dev_env` explicitly routes that resource through the dev connection. This is what ensures each instance lands in the correct AWS account and region.
 
 ---
 
-### Issue 2: Variable Mismatches
+## Part 2 — Issues Encountered & How They Were Resolved
 
-**Problem:** Variable names declared in `variables.tf` did not exactly match what was used in `main.tf` or defined in the `.tfvars` files, leading to empty or undefined values.
-
-**Fix:** Ensured consistent naming across all three files — `variables.tf`, `main.tf`, and the respective `.auto.tfvars` files.
+Real-world Terraform learning always comes with errors. Here are the three issues hit during this hands-on and what they taught us.
 
 ---
 
-### Issue 3: No Default VPC in `us-west-2`
+### Issue 1 — Provider Not Referenced Correctly in `main.tf`
 
-**Problem:** When Terraform tried to launch instances in `us-west-2`, the region had **no default VPC**, causing the plan/apply to fail because there was no network to attach the instance to.
+**What went wrong:** The `provider` attribute was missing or incorrectly set in the resource blocks. Terraform either threw a configuration error or silently used the default provider, deploying the instance to the wrong region.
 
-**Resolution Options Explored:**
-- Creating a new VPC manually in `us-west-2`
+**The fix:** Explicitly add `provider = aws.dev_env` and `provider = aws.test_env` to each resource block.
 
-**Final Fix:** Instead of relying on the default VPC, explicitly provided a `subnet_id` and `vpc_security_group_ids` in the resource block:
+**The lesson:** Terraform will never guess which aliased provider you intend to use. If you define aliases but don't reference them in your resources, those aliases are completely ignored and everything falls back to the default. Always be explicit about provider binding when aliases are involved.
+
+---
+
+### Issue 2 — Variable Name Mismatches Caused Silent Failures
+
+**What went wrong:** Variable names in `variables.tf`, `main.tf`, and the `.tfvars` files didn't match exactly. For example, a variable declared as `ami_id` but referenced as `amiId` or assigned in a `.tfvars` file with a slightly different name. Terraform did not always throw an error — it silently fell back to the `default = ""` value instead, creating instances with no AMI specified.
+
+**The fix:** Ensure the variable name is exactly the same across all three places — the declaration in `variables.tf`, the usage as `var.<name>` in `main.tf`, and the assignment in the `.tfvars` file.
+
+**The lesson:** Variable names are case-sensitive and must match precisely. The dangerous part is that a mismatch won't always cause an obvious error — if a default value exists, Terraform happily uses it. Always double-check that your variable names are consistent across all files.
+
+---
+
+### Issue 3 — No Default VPC in `us-west-2`
+
+**What went wrong:** `terraform apply` failed because the `us-west-2` region had no default VPC. AWS creates a default VPC in each region for new accounts, but this one was either deleted or the account was set up without it. Without a VPC and subnet, AWS has nowhere to place the instance and rejects the request.
+
+**What was tried first:** Creating a new VPC manually in `us-west-2` via the AWS Console.
+
+**The final fix:** Rather than relying on a default VPC, explicitly provide the `subnet_id` and `vpc_security_group_ids` directly in the resource block:
 
 ```hcl
 subnet_id              = "subnet-0fd2fc2b84b24cff8"
 vpc_security_group_ids = ["sg-044910c7a8c19aa3d"]
 ```
 
-This bypassed the default VPC requirement and allowed `terraform plan` and `terraform apply` to succeed.
+**The lesson:** Never assume a default VPC exists in a region — especially in production accounts or regions you haven't used before. Hardcoding or referencing explicit subnets and security groups is also better practice because it gives you full visibility and control over where your instances are placed and what traffic they allow.
 
 ---
 
-## Experiment: Named `.tfvars` Files with `-var-file` Flag
+## Part 3 — Experiment: Named `.tfvars` with `-var-file`
 
-After the initial setup worked, a second test was done using **named tfvars files** (not `.auto.tfvars`) with an Ubuntu AMI to understand how Terraform handles variable precedence and state reconciliation.
+Once the base setup was working with Linux AMIs via `.auto.tfvars`, a second experiment tested **named `.tfvars` files** passed manually via the `-var-file` flag. The goal was to swap the AMI to Ubuntu and closely observe how Terraform handles variable overrides and state reconciliation.
 
-### The tfvars Files Used
+### The New tfvars Files
 
-Both `dev.tfvars` and `test.tfvars` had the same content — but pointing to an Ubuntu AMI:
+Both `dev.tfvars` and `test.tfvars` pointed to an Ubuntu AMI using the same variable names:
 
 ```hcl
-# dev.tfvars / test.tfvars
+# dev.tfvars  /  test.tfvars
 ami_id        = "ami-0786adace1541ca80"   # Ubuntu AMI
 instance_type = "t2.micro"
 ```
 
-> **Note:** Unlike `*.auto.tfvars`, files named without `.auto.` in the name are **not loaded automatically**. They must be explicitly passed using `-var-file="filename.tfvars"`.
+> ⚠️ **Key difference from `.auto.tfvars`:** A file named `dev.tfvars` or `test.tfvars` is **NOT loaded automatically**. You must explicitly pass it using `-var-file="dev.tfvars"`. If you don't pass it, Terraform ignores the file entirely.
 
 ---
 
-### Scenario 1 — Apply with `test.tfvars` only
+### Scenario 1 — Targeted Update: Only Test Instance Changed ✅
 
 ```bash
 terraform apply -var-file="test.tfvars"
 ```
 
-**What happened:**
+**How Terraform resolved variables for this run:**
 
-- Terraform loaded `test.tfvars` alongside the already auto-loaded `dev.auto.tfvars` and `test.auto.tfvars`
-- The `ami_id` variable (used by the **test instance**) was **overridden** by `test.tfvars` with the Ubuntu AMI
-- Terraform detected a drift in the test instance (Linux AMI → Ubuntu AMI) and replaced it
-- The **dev instance was untouched** — its variables came from `dev.auto.tfvars` which was not overridden
-
-**Result:**
-
-| Instance | Before | After |
+| Step | Source | Variable Set |
 |---|---|---|
-| `aws_instance.test` | Linux AMI (destroyed) | Ubuntu AMI (created) |
-| `aws_instance.dev` | Linux AMI | Linux AMI (no change) ✅ |
+| 1 | `dev.auto.tfvars` (auto-loaded) | `ami_id` = Linux AMI |
+| 2 | `test.auto.tfvars` (auto-loaded) | `test_ami_id` = Linux AMI |
+| 3 | `test.tfvars` (explicitly passed) | `ami_id` = **Ubuntu AMI** ← overrides step 1 |
 
-This demonstrated that `-var-file` **merges** with already auto-loaded values, and only the variables defined in the passed file are overridden — making isolated, targeted updates possible.
+Since `ami_id` was overridden to the Ubuntu AMI and the test resource uses `ami_id`, Terraform detected that the test instance needed to change. The dev instance's resolved variable set was unaffected.
+
+**Outcome:**
+
+| Instance | Before | After | Action |
+|---|---|---|---|
+| `aws_instance.test` | Linux AMI | Ubuntu AMI | Destroyed → Recreated |
+| `aws_instance.dev` | Linux AMI | Linux AMI | **No change** ✅ |
+
+**Why dev was untouched:** Terraform compares the full *desired state* (computed from all merged variable inputs) against the *current state* recorded in `terraform.tfstate`. Since dev's desired state still matched its current state, Terraform took no action on it. This is the ideal behavior — surgical changes to one environment without disturbing the other.
 
 ---
 
-### Scenario 2 — Apply with `dev.tfvars`
+### Scenario 2 — Unintended Impact: Both Instances Replaced ⚠️
 
 ```bash
 terraform apply -var-file="dev.tfvars"
 ```
 
-**What happened:**
+**How Terraform resolved variables for this run:**
 
-- Terraform loaded `dev.tfvars` which defined `ami_id` and `instance_type`
-- These same variable names are used by **both** the dev and test resource blocks in `main.tf`
-- `test.auto.tfvars` was also auto-loaded but its `test_ami_id` was now being compared against a state where the test instance had already been swapped to Ubuntu
-- Terraform saw both instances as needing changes — it destroyed the existing Ubuntu test instance and the Linux dev instance, and re-created **both as Ubuntu**
-
-**Result:**
-
-| Instance | Before | After |
+| Step | Source | Variable Set |
 |---|---|---|
-| `aws_instance.dev` | Linux AMI (destroyed) | Ubuntu AMI (created) |
-| `aws_instance.test` | Ubuntu AMI (destroyed) | Ubuntu AMI (re-created) |
+| 1 | `dev.auto.tfvars` (auto-loaded) | `ami_id` = Linux AMI |
+| 2 | `test.auto.tfvars` (auto-loaded) | `test_ami_id` = Linux AMI |
+| 3 | `dev.tfvars` (explicitly passed) | `ami_id` = **Ubuntu AMI** ← overrides step 1 |
+
+**Outcome:**
+
+| Instance | Before | After | Action |
+|---|---|---|---|
+| `aws_instance.dev` | Linux AMI | Ubuntu AMI | Destroyed → Recreated |
+| `aws_instance.test` | Ubuntu AMI | Ubuntu AMI | Destroyed → Recreated |
+
+Both instances were replaced — including the test instance which was already running Ubuntu. This was unexpected and is the most important learning from this entire hands-on.
 
 ---
 
-### Why Did Both Instances Get Replaced?
+### Why Did Both Get Replaced? — The Critical Lesson
 
-This is a key Terraform behaviour to understand:
+> **Terraform reconciles the ENTIRE state on every single `apply`, not just the parts whose variables changed.**
 
-> **Terraform always reconciles the entire state on every apply**, not just the resources whose variables changed.
+Here is the exact chain of events:
 
-When `dev.tfvars` was applied, Terraform evaluated the full desired state across all resources. Since `ami_id` in `dev.tfvars` pointed to the Ubuntu AMI and that variable feeds into the dev instance, Terraform destroyed and re-created it. The test instance was also caught up in reconciliation because the state from the previous apply (Ubuntu) no longer matched what the combined variable set now described.
+1. `dev.tfvars` overrode `ami_id` with the Ubuntu AMI — this caused `aws_instance.dev` to be replaced (Linux → Ubuntu). This was expected.
 
-**Root cause:** Both resource blocks shared the same variable names (`ami_id`, `instance_type`), so overriding them with `-var-file` affected both environments simultaneously.
+2. The test instance was previously in state as Ubuntu (from Scenario 1). Terraform re-evaluated the full desired state for all resources. During this evaluation, the combined variable set produced a configuration for the test instance that Terraform considered different from what was recorded in state — triggering a replace even though the AMI was already Ubuntu.
 
-**Lesson:** When managing multiple environments in a single Terraform workspace, use **distinct variable names per environment** (e.g., `dev_ami_id`, `test_ami_id`) or better yet, use **separate workspaces or state files** per environment to avoid unintended cross-environment changes.
+**The root cause: shared variable names.** Both the dev and test resource blocks used variables named `ami_id` and `instance_type`. When you override `ami_id` via `-var-file`, it has no concept of scope — it overrides that variable globally for the entire run, affecting every resource that references it.
+
+**How to prevent this in practice:**
+
+Use fully distinct, prefixed variable names per environment so no two resources ever share a variable name:
+
+```hcl
+# Clear separation — no shared variable names
+variable "dev_ami_id"          { ... }
+variable "dev_instance_type"   { ... }
+variable "test_ami_id"         { ... }
+variable "test_instance_type"  { ... }
+```
+
+Or for production setups, use **separate Terraform workspaces** or **separate state files** per environment so each environment's state is completely independent and changes to one can never ripple into another.
 
 ---
 
-### Variable Loading Order & Precedence
+## Variable Loading Order — Full Reference
 
-Terraform loads variables in this order (later sources win):
+Terraform merges variables from multiple sources in a fixed order. When the same variable is defined in more than one place, **the later source always wins**:
 
-| Priority | Source |
+| Priority | Source | How it loads |
+|:---:|---|---|
+| 1 (lowest) | `default` in `variables.tf` | Always present as a fallback |
+| 2 | `terraform.tfvars` | Auto-loaded if the file exists in the working directory |
+| 3 | `*.auto.tfvars` | Auto-loaded alphabetically |
+| 4 | `-var-file="file.tfvars"` | Explicitly passed at the command line |
+| 5 (highest) | `-var="key=value"` | Inline flag at the command line |
+
+In this hands-on, `-var-file` at priority 4 overrode `.auto.tfvars` values at priority 3. This is why passing `test.tfvars` changed the AMI even though `test.auto.tfvars` had already set a value for it.
+
+---
+
+## Summary of All Key Concepts
+
+| Concept | What to Remember |
 |---|---|
-| 1 (lowest) | `default` values in `variables.tf` |
-| 2 | `terraform.tfvars` (auto-loaded if present) |
-| 3 | `*.auto.tfvars` files (auto-loaded alphabetically) |
-| 4 | `-var-file="filename.tfvars"` (explicitly passed) |
-| 5 (highest) | `-var="key=value"` inline flags |
-
-In this experiment, `test.tfvars` passed via `-var-file` had **higher precedence** than `test.auto.tfvars`, which is why it overrode the AMI for the test instance.
-
----
-
-## Key Learnings
-
-| Concept | Takeaway |
-|---|---|
-| Provider aliases | Use `alias` in provider block + `provider = aws.<alias>` in resource to target specific environments |
-| `.auto.tfvars` | Files ending in `.auto.tfvars` are auto-loaded — no need to pass `-var-file` flag |
-| Named `.tfvars` | Files like `dev.tfvars` must be explicitly passed with `-var-file="dev.tfvars"` |
-| Variable precedence | `-var-file` overrides `.auto.tfvars` which overrides `variables.tf` defaults |
-| Shared variable names | If two environments use the same variable name, overriding it affects both — always use distinct names per environment |
-| Terraform full-state reconciliation | Every `apply` reconciles the **entire** state, not just changed resources — partial updates can cause unintended replacements |
-| Separate variable sets | Prefix variables per environment (e.g., `test_ami_id`) to avoid collisions and unintended destroy/recreate cycles |
-| Default VPC dependency | Not all regions have a default VPC — always explicitly provide `subnet_id` and security groups in production configs |
-| Provider binding is mandatory | Without `provider = aws.<alias>`, resources fall back to the default provider, deploying to the wrong region/account |
+| **Provider alias** | Use `alias` in the provider block and `provider = aws.<alias>` in each resource to route it to the right AWS account/region |
+| **Provider binding is mandatory** | Without explicit binding, all resources fall back to the default provider — wrong region, wrong account |
+| **`.auto.tfvars`** | Auto-loaded on every plan/apply — great for environment defaults you always want active |
+| **Named `.tfvars`** | Must be explicitly passed with `-var-file` — useful for one-off overrides or environment switching |
+| **Variable precedence** | `-var-file` beats `.auto.tfvars` beats `variables.tf` defaults. Later always wins |
+| **Shared variable names are dangerous** | If two environments share a variable name, overriding it affects both. Always use distinct, prefixed names per environment |
+| **Terraform reconciles entire state** | Every `apply` compares ALL resources against the full desired state — there is no concept of applying changes to just one resource in isolation |
+| **No default VPC assumption** | Never rely on a default VPC existing. Always explicitly provide `subnet_id` and `vpc_security_group_ids` |
+| **Variable mismatch is silent** | A naming error won't always throw an error — Terraform may silently fall back to the default value |
 
 ---
 
-## Commands Used
+## Commands Reference
 
 ```bash
-terraform init                            # Initialize providers
-terraform validate                        # Check config syntax
-terraform plan                            # Preview changes (uses auto-loaded tfvars)
-terraform apply                           # Apply (uses auto-loaded tfvars)
-terraform apply -var-file="test.tfvars"   # Apply with explicit tfvars (overrides auto)
-terraform apply -var-file="dev.tfvars"    # Apply with dev-specific tfvars
-terraform destroy                         # Tear down all resources
+# Initial setup
+terraform init                              # Download providers and initialize the backend
+
+# Validation and planning
+terraform validate                          # Check for syntax and configuration errors
+terraform plan                              # Preview changes using auto-loaded tfvars only
+terraform plan -var-file="dev.tfvars"       # Preview with a specific override file
+
+# Applying changes
+terraform apply                             # Apply using auto-loaded tfvars only
+terraform apply -var-file="test.tfvars"     # Apply with test environment overrides
+terraform apply -var-file="dev.tfvars"      # Apply with dev environment overrides
+
+# Cleanup
+terraform destroy                           # Destroy all managed resources
+terraform destroy -var-file="dev.tfvars"    # Destroy with specific variable context
 ```
+
+---
+
+## What to Try Next
+
+- Refactor `variables.tf` so every variable uses a clear `dev_` or `test_` prefix, then re-run Scenario 2 to confirm both instances are no longer affected simultaneously
+- Explore `terraform workspace` to fully isolate dev and test state files from each other
+- Move the hardcoded `subnet_id` and `vpc_security_group_ids` into variables so each environment can reference its own networking resources
+- Try `terraform plan -out=tfplan` to save a plan file and then `terraform apply tfplan` to apply exactly what was previewed — no surprises
