@@ -1,22 +1,23 @@
 resource "aws_instance" "dev" {
 
-    ami=var.ami_id
-    instance_type = var.instance_type
-    provider = aws.dev_env
-      subnet_id              = "subnet-0fd2fc2b84b24cff8"
-  vpc_security_group_ids = ["sg-044910c7a8c19aa3d"]
-    tags ={
-        name= "dev-instance"
-    }
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  provider               = aws.dev_env
+  subnet_id              = "subnet-0029e20d42dec5bc2"
+  vpc_security_group_ids = ["sg-084dc7cce1ca7d62e"]
+  tags = {
+    Name = "dev-instance"
+  }
 }
 
 resource "aws_instance" "test" {
-    ami = var.test_ami_id
-    instance_type = var.test_instance_type
-    provider = aws.test_env
-      subnet_id              = "subnet-0fd2fc2b84b24cff8"
-  vpc_security_group_ids = ["sg-044910c7a8c19aa3d"]
-    tags ={
-        name= "test-instance"
-    }
+  ami                    = var.test_ami_id
+  instance_type          = var.test_instance_type
+  provider               = aws.test_env
+  subnet_id              = "subnet-0029e20d42dec5bc2"
+  vpc_security_group_ids = ["sg-084dc7cce1ca7d62e"]
+  tags = {
+
+    name = "test-instance"
+  }
 }
